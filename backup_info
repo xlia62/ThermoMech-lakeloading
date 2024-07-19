@@ -1,0 +1,27 @@
+data part2: geodyn1
+data2/backup_geodyn3_part2/lxue07/Thermomech/dry
+Lake_drop_restart_71_1000m_Tp10_dry  Lake_drop_restart_71_v27_dry             Lake_nochange_restart_71_v27_dry  reference_Tp10_dry
+Lake_drop_restart_71_dry_oneperiod   Lake_nochange_restart_71_1000m_Tp10_dry  reference_71                      reference_v27_dry
+Lake_drop_restart_71_LAB65_dry       Lake_nochange_restart_71_LAB65_dry       reference_LAB65_dry
+
+
+data part1: geodyn1
+/data1/backup_geodyn3/Thermomech/output
+Lake_drop_restart_71_justdroop  Lake_drop_restart_71_oneperiod  Lake_drop_restart_71_v27  Lake_nochange_restart_71_v27
+
+data part3: geodyn1
+/data1/backup_geodyn3/Documents/ThermoMech2d/ForLiang_ThermoMech2D/ForLiang_ThermoMech2D/output/AfricaModels2022/Lake_model_extraction
+Lake_drop_restart_71_1000m          Lake_drop_restart_71_strongcrust2       Lake_nochange_restart_71_300m_dry         reference_71_dry
+Lake_drop_restart_71_1000m_rev_dry  Lake_drop_restart_71_strongcrust_dry    Lake_nochange_restart_71_LAB65            reference_71_dry_test
+Lake_drop_restart_71_1000m_Tp30     Lake_drop_restart_71_weakcrust2         Lake_nochange_restart_71_strongcrust2     reference_air
+Lake_drop_restart_71_1500m_dry      Lake_drop_restart_71_weakcrust_dry      Lake_nochange_restart_71_strongcrust_dry  reference_dry_test
+Lake_drop_restart_71_300m_dry       Lake_drop_restart_81_1000m              Lake_nochange_restart_71_weakcrust2       reference_dry_test_F
+Lake_drop_restart_71_600m_dry       Lake_nochange_restart_71_1000m          Lake_nochange_restart_71_weakcrust_dry    reference_strongcrust_dry
+Lake_drop_restart_71_dry            Lake_nochange_restart_71_1000m_rev_dry  Lake_nochange_restart_81_1000m            reference_v27
+Lake_drop_restart_71_LAB65          Lake_nochange_restart_71_1000m_Tp30     reference_71                              reference_weakcrust_dry
+
+
+time used for high resoluton model highres of 100m 51h for reference_71_dry
+time used for high resoluton model highres of 150m 51h for reference_71_dry
+
+
