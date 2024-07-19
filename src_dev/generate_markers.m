@@ -1,0 +1,126 @@
+function M = generate_markers(M,G)
+
+% Assamble the structure for the markers
+M.add = 0;           % Keeps track of the number of markers added/deleted
+M.x = zeros(M.n,1);  % x-coordinate
+M.y = zeros(M.n,1);  % y-coordinate
+
+rng('default') % Seed the random number generator
+
+% Generate the initial maker position coordinates with small random displacement
+switch G.grid_type
+    
+    case 'uniform'
+
+    M.nx = max(1,fix(sqrt(M.mincell)));
+    M.ny = max(1,fix(M.nicell/M.nx));
+    
+    M.nx = M.nx*(G.xnum-1);
+    M.ny = M.ny*(G.ynum-1);
+
+    m_dx = G.xsize/M.nx;
+    m_dy = G.ysize/M.ny;
+    
+    c = 0;
+    for xm = 1:M.nx
+        for ym = 1:M.ny
+            
+            c = c + 1;
+            M.x(c) = xm*m_dx - m_dx/2 + (rand-0.5)*m_dx;
+            M.y(c) = ym*m_dy - m_dy/2 + (rand-0.5)*m_dy;
+        end
+    end
+    
+    case 'boundary'       
+        
+        % Choose a suitable minimum number of markers per cell
+        m_min = M.mincell;
+        
+        c = 1;
+        % Loop over each cell and distribute the minimum number of markers
+        for k = 1:G.cellnum
+            % Cell vertices
+            xx = G.xx(k,:);
+            yy = G.yy(k,:);
+            
+            % Cell dimensions
+            dy = yy(2) - yy(1);
+            dx = xx(3) - xx(1);
+            
+            M.x(c:c+m_min-1) = xx(1) + dx/2 + (rand(m_min,1)-0.5)*dx;
+            M.y(c:c+m_min-1) = yy(1) + dy/2 + (rand(m_min,1)-0.5)*dy;
+            
+            c = c + m_min;
+        end
+        
+        % Now add the remaining number of markers
+        n = M.n - G.cellnum*m_min;
+        
+        dx = G.x(end-G.xb+1) - G.x(G.xb);
+        dy = G.y(end-G.yb+1) - G.y(G.yb);
+        
+        M.x(c:end) = G.x(G.xb) + dx/2 + (rand(n,1) - 0.5)*dx;
+        M.y(c:end) = G.y(G.yb) + dy/2 + (rand(n,1) - 0.5)*dy;
+     
+    otherwise
+
+        % Pretty good chance we will exceed the estimate of number of
+        % markers with this approach, does we double the size
+        M.x = zeros(2*M.n,1);  % x-coordinate
+        M.y = zeros(2*M.n,1);  % y-coordinate
+
+        % Choose a suitable minimum number of markers per cell
+        mincell = M.mincell;  % Min marker number
+        maxcell = M.maxcell;  % Max marker number
+        c = 1;
+        
+        % Smallest cell area
+        A = min(G.dx)*min(G.dy); 
+       
+        % Maximum marker density
+        markerdensity = mincell/A;
+
+        ncell = zeros(G.cellnum,1);
+        acell = zeros(G.cellnum,1);
+        % Loop over each cell and distribute the minimum number of markers
+        for k = 1:G.cellnum
+            % Cell vertices
+            xx = G.xx(k,:);
+            yy = G.yy(k,:);
+            
+            % Cell dimensions
+            dy = yy(2) - yy(1);
+            dx = xx(3) - xx(1);
+            
+            % cell area
+            A = dx*dy;
+            acell(k) = A;
+            
+            % Determin number of markers to put into cell, between micell
+            % and maxcell
+            mcell = min(maxcell,max(mincell,floor(markerdensity*A)));
+
+            mxcell = min(mcell,ceil(sqrt(mcell*dx/dy)));
+            mycell = max(1,floor(mcell/mxcell));
+            
+            mcell = mxcell*mycell;
+
+            [x,y] = quassidistribute(dx,dy,mxcell,mycell,2);
+            
+            M.x(c:c+mcell-1) = xx(1) + x; 
+            M.y(c:c+mcell-1) = yy(1) + y;
+
+            c = c + mcell;
+            ncell(k)=mcell;
+        end
+
+        % Resize to account for actual amount
+        M.x = M.x(1:c-1);
+        M.y = M.y(1:c-1);
+        M.n = c-1;
+        
+end
+
+M.I = zeros(M.n,1);  % material index
+M.T = zeros(M.n,1);  % marker temperature (set below)
+end

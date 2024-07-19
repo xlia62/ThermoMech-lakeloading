@@ -1,0 +1,440 @@
+function RunThermoMec2D_lake_extraction(gridmodel,inputmodel,modelbc,outpath)
+
+% =======================================================================
+% RunThermoMec2D
+% =======================================================================
+%
+% 
+% Version 3.4 July 5, 2018
+%
+% Initialize marker pressure to correspond to lithostatic, sticky layer
+% pressure is initialized to pressure cell condition.
+%
+% Enabled restart option
+%
+% Version 3.3 March 25, 2018
+%
+% Added switch to call visco-plastic version of ThermoMech2D or
+% visco-platic-elastic version
+%
+% Version 3.2 October 26, 2017
+%
+% Added switch to use SuiteSparse package directly 
+%
+% Version 3.1 March 14, 2017
+%
+% Added Lower Mantle phase transitions
+%
+% Version 3.0 March 14, 2017
+% Rob Moucha, Syracuse University
+% Siobhan Campbell, Syracuse University
+% Prasanna Gunawardana, Syracuse University
+%
+% !!!! Changed timing of ouptut from iterations steps to time steps !!!
+% !!!! Par struture for this, not backward compatible !!!
+%
+% Version 2.1 Feb 7, 2017
+% Rob Moucha, Syracuse University
+% Siobhan Campbell, Syracuse University
+% Prasanna Gunawardana, Syracuse University
+%
+% Added seperate input script file for boundary conditions
+% - Bug fixes, melt and fluid weakening corrected
+%
+% Version 2.0 Oct. 2016
+% Robert Moucha, Syracuse Unviersity
+% Siobhan Campbell, Syracuse University
+% 
+% Fixed bug with boundary marker integration
+% New Boundary Condition Model File
+% 
+% Thermomechanical visco-elasto-plastic numerical model with
+% erosion/sedimentation processes based on Gerya (2010).
+% 
+%
+% Version 1.0, Sep. 2014
+% Robert Moucha, Syracuse University
+% Peter Nelson,  University of Texas at Austin
+%
+% External functions used:
+%   <Model Setup File>
+%   ThermoMec2D_Fast.m
+%   Fast_Stokes_Continuity_solver_sandbox.m,
+%   Fast_Temperature_solver_grid.m
+%   marker_rheology.m
+%   markers2grid.m
+%   movemarkers.m
+%   
+%   
+% -------------------------------------------------------------------------
+% -------------------------------------------------------------------------
+% Solve Primitive Variable Stokes flow on a staggered grid with
+%
+%     vx       vx       vx
+%
+% vy  T---vy---T---vy---T   vy
+%     |        |        |
+%     vx   P   vx   P   vx
+%     |        |        |
+% vy  T---vy---T---vy---T   vy
+%     |        |        |
+%     vx   P   vx   P   vx
+%     |        |        |
+% vy  T---vy---T---vy---T   vy
+%
+%     vx       vx       vx
+%
+% Lines show basic grid, ghost nodes shown outside the basic grid are used
+% for boundary conditions.
+% -------------------------------------------------------------------------
+
+% Use SuiteSparse package directly if found in path
+useSuiteSparse = false;
+if exist('umfpack')== 3
+    useSuiteSparse = true;
+end
+
+% Restart Flag -- make sure you have appropriate restart input model files
+global restart
+
+% Visco-plastic-elastic OR Visco-plastic version
+% For VP, the code performs Piccard nonlinear itterations using a
+% convergence criteria based on velocity
+viscoelastic = true;       % True or False (false will call the visco-plastic version only)
+tol_accuracy = 0.001;     % @Liang was 0.0001;     % Relative tolerance accuracy used for non-linear iterations incase of VP
+max_iter = 20;             % Maximum numbero Piccard iterations, if reached, a warning message will be given, but code will continue
+
+% -------------------------------------------------------------------------
+%% Time stepping, ouput parameters
+% -------------------------------------------------------------------------
+global add_time
+if isempty(add_time)
+    add_time = false;
+end
+
+% Amount of timesteps
+Par.stepmax = 20000; %% Exceso, se define con el tiempo (model time)
+
+% Desired model time (yrs)
+global modeltime
+if isempty(modeltime)
+    modeltime = 1e6;
+end
+Par.modeltime = modeltime;
+
+ % see Viscoelastic timestep (5,000 yr) p. 183 Gerya
+% !!! If you see an ossicilation of max velocity, reduce time step see p. 275 !!!
+global timemax
+%timemax = 5e3; %5e3 for restart; %was 1000e3 for reference;
+Par.timemax = timemax; % (yrs)
+Par.timestep = Par.timemax/4; % Start out small
+
+% Output count type timesteps (true) or year steps (false)
+Par.outtype = false;
+
+% Computational time step frequency
+Par.nfreq_big = 50;        % steps
+Par.nfreq_small = 100000e6; % Set to very high (higher then stepmax) to avoid output of zoom-in models
+
+% Time frequency of output / big and small segments in yrs (as version 2.15)
+global output_freq
+if isempty(output_freq)
+    output_freq = 200e3;
+    disp('output time step: 200 kyr')
+end
+Par.yfreq_big = output_freq; 
+Par.yfreq_small = 1e11; %was 1e11 Set to very high to avoid output of zoom-in models # cha
+
+% limits of zoom-in output box:
+Par.markx=[1200 2000]*1000;
+Par.marky=[0 70]*1000;
+
+% -------------------------------------------------------------------------
+%% Output model names
+% -------------------------------------------------------------------------
+if ~exist(outpath,'dir')
+    mkdir(outpath)
+end
+
+% Parameter files 
+% Save copies of the input model and grid model in the output path
+infile_copy = [outpath,'/input_model.m'];
+copyfile([inputmodel,'.m'],infile_copy);
+grid_copy = [outpath,'/grid_model.m'];
+copyfile([gridmodel,'.m'],grid_copy);
+% copy files and varibles
+% run_copy = [outpath,'/run_model.m'];
+% copyfile('src_dev/RunThermoMec2D_lake_extraction.m',run_copy);
+
+% Get the full path to the output directory
+curdir = pwd;
+cd(outpath)
+outpath = pwd;
+cd(curdir);
+
+% -------------------------------------------------------------------------
+%% Special conditions parameters, temperature change, heating, melting
+% -------------------------------------------------------------------------
+
+% Maximal temperature change, allowed for one timestep (K)
+% NOTE: If tempmax = 0 ==> Stokes Flow only
+tempmax = 30;         % Maximum temperature change per timestep, if exceeded heat
+                     % heat equation time step will be reduced
+abstempmax = 2000;   % Unphysical temperature change, something very wrong
+
+if tempmax==0
+    warning('Stokes Flow Only Simulation')
+end
+
+% Shear heating on(1)/off(0)
+frictyn = 1;
+
+% Adiabatic heating on(1)/off(0)
+adiabyn = 1;
+
+% Melting flag, melt on(true)/off(false)
+melting = true;
+extract_melt = true;
+
+% Pore fluid and melt pressure factors (Sizova et al., 2010; Gerya and Meilick, 2011)
+% The pore fluid pressure P_fluid reduces the yield strength of fluid
+% bearing rock. For dry rocks lambda_fluid = 1. Hydrostatic gradiant in the
+% upper crust is lamda_fluid = 0.6. Likewise, lamda_melt is due to weaking
+% of rocks due to ascending melts.
+lambda_fluid = 0.001; % 1 - P_fluid/P_solid
+lambda_melt = 1;  % was 0.001 for plastic weakening, 1 - P_melt/P_solid
+
+% Radius of ascenet channel/dike (m) 
+dike_dx = 50;
+
+% Partially Melt Fractions
+% Melt extraction threshold fraction
+meltmax = 0.04;
+% Non-extractable amount of melt
+meltmin = 0.02;
+% Partially molten rock viscosity
+fixed_etamelt = true;  % Uses fixed value etamelt for melt >0.1 instead of formula
+etamelt = 1e+16; % Pa s . # 1e16-1e17 suggested, or Schmeling (2010)
+
+
+
+
+% -------------------------------------------------------------------------
+%% Constants and conversion factors
+% -------------------------------------------------------------------------
+
+% reference density used for initial lithostatic pressure only (kg/m^3)
+rho_0 = 3200;
+
+% Acceleration of Gravity (m/s^2)
+gx=0;
+gy=9.81;
+
+% Gas constant (J/mol/K)
+RGAS=8.314;
+
+% Conversion year to second
+yr2sec = 365.25*24*3600;
+
+% Absolute zero (deg-C)
+tabsolute = -273;
+
+% Adiabatic temperature gradient K/km
+tgrad = 0.5;
+tgrad = tgrad/1000; % K/m
+
+% Isothermal mantle if Stokes flow only
+if tempmax == 0
+    tgrad = 0;
+end
+
+% Convert time parameters to seconds
+Par.yfreq_big = Par.yfreq_big*yr2sec;
+Par.yfreq_small = Par.yfreq_small*yr2sec;
+Par.timemax = Par.timemax*yr2sec;
+Par.modeltime = Par.modeltime*yr2sec;
+Par.timestep = Par.timestep*yr2sec;
+
+
+% -------------------------------------------------------------------------
+% Initial temperature at the top, and bottom of the model based on2
+% prescribed mantle potential temperature (oC)
+% -------------------------------------------------------------------------
+ttop = 0;          % (deg-C)
+tpotential = 1316; % (deg-C)
+
+% -------------------------------------------------------------------------
+%% Viscosity and stress limits for rocks
+% -------------------------------------------------------------------------
+etamin = 1.0e+16;        % Lower limit (Pa) -- Independent of sticky-layer viscosity or melt viscosity
+etamax = 1.0e+25;        % Upper limit (Pa)
+stressmin = 1.0e+4;      % Lower stress limit for power law (Pa)
+maxyield = 100e9;       % Maximum yield stress (Pa)
+
+% -------------------------------------------------------------------------
+%% Marker, Marker Motion, Subgrid Diffusion
+% -------------------------------------------------------------------------
+
+% Minimum and maximum markers per cell
+M.mincell = 9; %was 9;
+M.maxcell = 64; %was 64;
+
+% Maximal marker displacement step, number of gridsteps
+markmax = 2;  % was 0.1 change, to increase speed use 2
+% Moving Markers: markmove
+% 0 = not moving at all
+% 1 = simple advection
+% 4 = 4-th order in space  Runge-Kutta
+markmove = 1; 
+% Velocity calculation: movemod
+% 0 = by Solving momentum and continuity equations
+% 1 = solid body rotation
+% Velocity calculation
+% 0 = by Solving momentum and continuity equations
+% 1 = solid body rotation
+movemod=0;
+% Numerical Subgrid stress diffusion coefficient
+dsubgrids=1;
+% Numerical Subgrid temperature diffusion coefficient
+dsubgridt=1;
+
+% Recycle markers across boundary
+markerreflect = false;
+
+% Fill empty cells with markers of the type
+fillemptycells = false;
+filloption = 3;  % 1 == last row, 2 == first row, 3 == both last and first, 4 == everywhere (not ready yet)
+newmarkertype = [10 1 10]; % Corresponds to the options above (first, last, everywhere)
+
+addmarkers = false; % Not implemented yet
+
+% -------------------------------------------------------------------------
+%% Construct Computational Grid & Populate with blank Markers
+% -------------------------------------------------------------------------
+
+if ~restart
+
+    % Run input grid file to set grid parameters
+    run(gridmodel)
+
+    % Assamble grid parameters from gridmodel
+    G.xnum = xnum; G.ynum = ynum;
+    G.xsize = xsize0; G.ysize = ysize0;
+    
+    G.bx = bx; G.by = by; % Resolution of fine region (m)
+    G.wx = wx; G.wy = wy; G.f = f;  % width of fine uniform grid (m)
+    
+    % Construct the grid
+    G = construct_grid(G);
+    grid_type = G.grid_type;
+    gridx = G.x'; gridy = G.y';
+    gridx1 = gridx(1);
+    
+    % Defining intial position of markers
+    M.n = M.mincell*(xnum-1)*(ynum-1);  % Initial total amount of markers (will grow for non-uniform grids)
+    M = generate_markers(M,G);
+    MX = M.x; MY = M.y;
+
+    % Needed for filling empty cells
+    mxcell = max(1,sqrt(M.mincell));
+    mycell = max(1,fix(M.mincell/mxcell));
+    
+    clear M G
+    
+    G.grid_type = grid_type;
+    G.xsize = gridx(end);
+    G.ysize = gridy(end);
+    G.xnum = xnum;
+    G.ynum = ynum;
+    G.bx = bx; G.by = by; G.wx = wx; G.wy = wy; G.f = f;
+    G.gridx = gridx;
+    G.gridy = gridy;
+    
+    % Creating markers array
+    marknum = length(MX);
+    
+    MTK=zeros(marknum,1);     % Temperature, K
+    MI=zeros(marknum,1);    % Type
+    MXN=zeros(marknum,1);   % Horizontal index
+    MYN=zeros(marknum,1);   % Vertical index
+    MCXN=zeros(marknum,1);  % Horizontal central index
+    MCYN=zeros(marknum,1);  % Vertical central index
+    MSXX=zeros(marknum,1);  % SIGMAxx - deviatoric normal stress, Pa
+    MSXY=zeros(marknum,1);  % SIGMAyy - shear stress, Pa
+    META=zeros(marknum,1);  % viscosity, Pa s
+    MEXX=zeros(marknum,1);  % EPSILONxx - normal strain rate, 1/s
+    MEXY=zeros(marknum,1);  % EPSILONyy - shear strain rate, 1/s
+    MPR=zeros(marknum,1);   % Pressure, Pa
+    MGII=zeros(marknum,1);  % Accumulated plastic strain
+    MBII=zeros(marknum,1);  % Accumulated bulk strain
+    MRAT=ones(marknum,1);   % EiiMarker/EiiGrid Ratio
+    MXM=zeros(marknum,1);   % Cummulative Melt Fraction
+    MEXTC=zeros(marknum,1); % Cummulative Extracted Melt Fraction
+    MEXT=zeros(marknum,1);  % Extracted Melt Fraction
+    MLAMBDA=ones(marknum,1); % Weakening effect of melt/fluid
+    plastic_yield = zeros(marknum,1); % plastic yielding occured
+    MPH410 = zeros(marknum,2);
+    MPH660 = MPH410;
+    MECL=zeros(marknum,5);   % Eclogite phase transformations
+end
+
+
+% -------------------------------------------------------------------------
+%% Define Material Properties & Build Geometry
+% -------------------------------------------------------------------------
+
+% Run input parameter file
+disp('Constructing Initial Model')
+disp('-----------------')
+run(inputmodel)
+
+% To safe space in markers files, phase transistions are enabled in input
+% file, these require additional marker properties
+% note Operands to the || and && operators must be convertible to logical
+% scalar values.@ Liang
+% if ~restart && RxType
+if ~restart
+    MPH410 = zeros(marknum,2);
+    MPH660 = MPH410;
+    MECL=zeros(marknum,5);   % Eclogite phase transformations
+end
+
+% Run to generate boundary conditions
+if restart
+    xnum = G.xnum;
+    ynum = G.ynum;
+    xsize = G.xsize;
+    ysize = G.ysize;
+    gridx = G.gridx;
+    gridy = G.gridy;
+    % Needed for filling empty cells
+    mxcell = max(1,sqrt(M.mincell));
+    mycell = max(1,fix(M.mincell/mxcell));
+
+    tbottom = G.tk1(end,2);
+end
+run(modelbc)
+
+% Initialize non-zero property values
+MEXX = MEXX + 1e-15/sqrt(2);  % EPSILONxx - normal strain rate, 1/s
+MEXY = MEXY + 1e-15/sqrt(2);  % EPSILONyy - shear strain rate, 1/s
+MECL(:,2) = 1e4;             % Initial change in Gibbs free energy, set to be high
+%MPR = LithostaticPressure(prfirst,sticky_layer,gy,rho_0,MI,MY);
+
+%% Run ThermoMec2D
+if viscoelastic
+    disp('Viscoelastic model');
+    % make a copy of runfile 
+    code_copy = [outpath,'/main_code.m'];
+    copyfile('src_dev/ThermoMec2D_Fast_lake_extraction.m', code_copy);
+
+    %run_copy = [outpath,'/run_input.m'];
+    %copyfile('src_dev/RunThermoMec2D_lake_extraction_.m', run_copy);
+    
+    %ThermoMec2D_Fast_lake_extraction
+    ThermoMec2D_oblique
+    %ThermoMec2D_Fast_lake_extraction_artsed
+
+else
+    %ThermoMec2D_Fast_vp %Visco-platic only version of code
+end
